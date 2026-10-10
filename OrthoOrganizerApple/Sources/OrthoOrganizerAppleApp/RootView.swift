@@ -45,9 +45,11 @@ struct SidebarView: View {
             OrthoLogo()
                 .padding(.horizontal, 12)
                 .padding(.top, 12)
-            List(OrganizerSection.allCases, selection: $store.selectedSection) { section in
-                Label(section.rawValue, systemImage: section.systemImage)
-                    .tag(section)
+            List(selection: $store.selectedSection) {
+                ForEach(OrganizerSection.allCases) { section in
+                    Label(section.rawValue, systemImage: section.systemImage)
+                        .tag(section)
+                }
             }
             .listStyle(.sidebar)
             Spacer()

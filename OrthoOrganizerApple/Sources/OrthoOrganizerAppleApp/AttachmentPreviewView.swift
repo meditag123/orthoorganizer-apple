@@ -86,7 +86,10 @@ struct AttachmentPreviewView: View {
         .fileExporter(isPresented: $showExporter,
                       document: AttachmentDocument(data: data),
                       contentType: .data,
-                      defaultFilename: name)
+                      defaultFilename: name) { _ in
+            // The export result is intentionally handled as a no-op here. The
+            // system file exporter already reports any failure to the user.
+        }
         .frame(minWidth: 520, minHeight: 520)
     }
 

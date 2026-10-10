@@ -315,6 +315,10 @@ final class FirebaseCloudService: OrganizerCloudService {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
+    private func sha256Hex(_ string: String) -> String {
+        sha256Hex(Data(string.utf8))
+    }
+
     private static func dutyObject(_ duty: Duty) -> [String: Any] {
         ["id": duty.id.uuidString,
          "date": isoDay(duty.date),
