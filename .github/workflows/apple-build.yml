@@ -1,0 +1,59 @@
+name: Apple build
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build iOS simulator and macOS targets
+    runs-on: macos-14
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: OrthoOrganizerApple
+        run: xcodegen generate
+
+      - name: Build iOS simulator target
+        working-directory: OrthoOrganizerApple
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project OrthoOrganizerApple.xcodeproj \
+            -scheme OrthoOrganizerApple \
+            -sdk iphonesimulator \
+            -configuration Release \
+            CODE_SIGNING_ALLOWED=NO \
+            build | tee ../ios-build.log
+
+      - name: Build macOS target
+        working-directory: OrthoOrganizerApple
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project OrthoOrganizerApple.xcodeproj \
+            -scheme OrthoOrganizerMac \
+            -sdk macosx \
+            -configuration Release \
+            CODE_SIGNING_ALLOWED=NO \
+            build | tee ../macos-build.log
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: apple-build-logs
+          path: |
+            ios-build.log
+            macos-build.log
