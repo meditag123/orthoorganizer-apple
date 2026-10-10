@@ -28,6 +28,7 @@ targets:
       - path: Resources
     settings:
       base:
+        GENERATE_INFOPLIST_FILE: YES
         PRODUCT_BUNDLE_IDENTIFIER: com.orthoorganizer.apple
         MARKETING_VERSION: "0.1.2"
         CURRENT_PROJECT_VERSION: "2"
@@ -54,6 +55,7 @@ targets:
       - path: Resources
     settings:
       base:
+        GENERATE_INFOPLIST_FILE: YES
         PRODUCT_BUNDLE_IDENTIFIER: com.orthoorganizer.apple.mac
         MARKETING_VERSION: "0.1.2"
         CURRENT_PROJECT_VERSION: "2"
@@ -76,6 +78,7 @@ targets:
       - path: Shared
     settings:
       base:
+        GENERATE_INFOPLIST_FILE: YES
         PRODUCT_BUNDLE_IDENTIFIER: com.orthoorganizer.apple.widget
         INFOPLIST_KEY_CFBundleDisplayName: OrthoOrganizer Widget
         INFOPLIST_KEY_NSExtension_NSExtensionPointIdentifier: com.apple.widgetkit-extension
@@ -89,6 +92,7 @@ targets:
       - path: Shared
     settings:
       base:
+        GENERATE_INFOPLIST_FILE: YES
         PRODUCT_BUNDLE_IDENTIFIER: com.orthoorganizer.apple.mac.widget
         INFOPLIST_KEY_CFBundleDisplayName: OrthoOrganizer Widget
         INFOPLIST_KEY_NSExtension_NSExtensionPointIdentifier: com.apple.widgetkit-extension
