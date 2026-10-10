@@ -34,8 +34,25 @@ jobs:
             -scheme OrthoOrganizerApple \
             -sdk iphonesimulator \
             -configuration Release \
+            -derivedDataPath build-ios \
             CODE_SIGNING_ALLOWED=NO \
             build | tee ../ios-build.log
+
+      - name: Package iOS simulator app
+        working-directory: OrthoOrganizerApple
+        run: |
+          set -euo pipefail
+          app_path="build-ios/Build/Products/Release-iphonesimulator/OrthoOrganizerApple.app"
+          test -d "$app_path"
+          ditto -c -k --sequesterRsrc --keepParent "$app_path" ../OrthoOrganizerSimulator.zip
+
+      - name: Upload iOS simulator app
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: OrthoOrganizerSimulator
+          path: OrthoOrganizerSimulator.zip
+          retention-days: 14
 
       - name: Build macOS target
         working-directory: OrthoOrganizerApple
