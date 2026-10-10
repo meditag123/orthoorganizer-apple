@@ -45,10 +45,15 @@ struct SidebarView: View {
             OrthoLogo()
                 .padding(.horizontal, 12)
                 .padding(.top, 12)
-            List(selection: $store.selectedSection) {
+            List {
                 ForEach(OrganizerSection.allCases) { section in
-                    Label(section.rawValue, systemImage: section.systemImage)
-                        .tag(section)
+                    Button {
+                        store.selectedSection = section
+                    } label: {
+                        Label(section.rawValue, systemImage: section.systemImage)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.plain)
                 }
             }
             .listStyle(.sidebar)
