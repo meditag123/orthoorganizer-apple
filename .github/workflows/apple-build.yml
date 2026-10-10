@@ -54,6 +54,25 @@ jobs:
           path: OrthoOrganizerSimulator.zip
           retention-days: 14
 
+      - name: Package Appetize preview without widget extension
+        working-directory: OrthoOrganizerApple
+        run: |
+          set -euo pipefail
+          app_path="build-ios/Build/Products/Release-iphonesimulator/OrthoOrganizerApple.app"
+          preview_root="build-ios/appetize-preview"
+          preview_app="$preview_root/OrthoOrganizerApple.app"
+          mkdir -p "$preview_root"
+          rsync -a --exclude='PlugIns/' "$app_path/" "$preview_app/"
+          ditto -c -k --sequesterRsrc --keepParent "$preview_app" ../OrthoOrganizerSimulator_Appetize.zip
+
+      - name: Upload Appetize preview
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: OrthoOrganizerSimulator_Appetize
+          path: OrthoOrganizerSimulator_Appetize.zip
+          retention-days: 14
+
       - name: Build macOS target
         working-directory: OrthoOrganizerApple
         run: |

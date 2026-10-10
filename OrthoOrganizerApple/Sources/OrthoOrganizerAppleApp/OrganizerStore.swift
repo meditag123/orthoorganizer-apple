@@ -200,6 +200,20 @@ final class OrganizerStore: ObservableObject {
         }
     }
 
+    func syncNow() async {
+        guard let session = remoteSession else { return }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            snapshot = try await cloud.downloadSnapshot(using: session)
+            refreshWidget()
+            statusMessage = "Ο συγχρονισμός ολοκληρώθηκε."
+            errorMessage = nil
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? "Ο συγχρονισμός δεν ολοκληρώθηκε."
+        }
+    }
+
     func loadAttachment(_ attachment: Attachment) async throws -> Data {
         guard let session = remoteSession else { throw OrganizerCloudError.archiveUnavailable }
         return try await cloud.loadAttachment(attachment, using: session)
