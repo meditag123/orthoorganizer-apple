@@ -19,6 +19,9 @@ struct LoginView: View {
                         VStack(alignment: .leading, spacing: 16) {
                             Text("Σύνδεση")
                                 .font(.title2.weight(.bold))
+                            Text("Χρησιμοποίησε τα ίδια στοιχεία με Windows και Android.")
+                                .font(.subheadline)
+                                .foregroundStyle(OrthoTheme.muted)
 
                             TextField("Username", text: $username)
                                 .textFieldStyle(.roundedBorder)
@@ -108,9 +111,6 @@ struct SignupView: View {
                 if let error = store.errorMessage {
                     Text(error).foregroundStyle(.red)
                 }
-                if let status = store.statusMessage {
-                    Text(status).foregroundStyle(OrthoTheme.teal)
-                }
                 Button("Δημιουργία λογαριασμού") {
                     guard password == confirm else {
                         store.errorMessage = "Τα δύο password δεν είναι ίδια."
@@ -118,7 +118,7 @@ struct SignupView: View {
                     }
                     Task {
                         await store.register(username: username, email: email, password: password)
-                        if store.isAuthenticated || store.statusMessage != nil { dismiss() }
+                        if store.isAuthenticated { dismiss() }
                     }
                 }
                 .disabled(store.isBusy || username.isEmpty || email.isEmpty || password.count < 6)
@@ -143,6 +143,9 @@ struct PasswordResetView: View {
         NavigationStack {
             Form {
                 Section {
+                    Text("Θα σταλεί σύνδεσμος επαναφοράς στο προσωπικό email του λογαριασμού.")
+                        .font(.subheadline)
+                        .foregroundStyle(OrthoTheme.muted)
                     TextField("Email", text: $email)
                         #if os(iOS)
                         .textContentType(.emailAddress)
