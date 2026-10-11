@@ -69,6 +69,15 @@ struct SidebarView: View {
                     }
                     .buttonStyle(.plain)
                 }
+                if store.isAdmin {
+                    Button {
+                        store.selectedSection = .settings
+                    } label: {
+                        Label("Διαχείριση χρηστών", systemImage: "person.badge.key")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.plain)
+                }
             }
             .listStyle(.sidebar)
             Spacer()
@@ -116,6 +125,13 @@ private struct MobileMenuDrawer: View {
                                 selected: store.selectedSection == section
                             ) {
                                 store.selectedSection = section
+                                close()
+                            }
+                        }
+
+                        if store.isAdmin {
+                            DrawerRow(title: "Διαχείριση χρηστών", icon: "person.badge.key", selected: false) {
+                                store.selectedSection = .settings
                                 close()
                             }
                         }

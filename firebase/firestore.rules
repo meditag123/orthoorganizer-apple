@@ -1,0 +1,75 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function own(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function isAdmin() {
+      return signedIn()
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)/access/profile).data.role == 'admin'
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)/access/profile).data.status == 'active';
+    }
+
+    // Public only for the username lookup already used by the clients.
+    match /loginIndex/{usernameHash} {
+      allow read: if true;
+      allow create: if signedIn()
+        && request.resource.data.uid == request.auth.uid;
+      allow update: if isAdmin()
+        || (signedIn() && resource.data.uid == request.auth.uid
+            && request.resource.data.uid == request.auth.uid);
+      allow delete: if false;
+    }
+
+    // The policy is readable before authentication so registration can be
+    // closed or capped. Only an approved administrator may change it.
+    match /adminControl/policy {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // A new account may create its own pending record. All later changes are
+    // administrator-only, including approval, suspension and role changes.
+    match /adminControl/managedUsers/{uid} {
+      allow read: if isAdmin();
+      allow create: if own(uid)
+        && request.resource.data.status == 'pending'
+        && request.resource.data.role == 'user';
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    match /users/{uid}/access/profile {
+      allow read: if own(uid) || isAdmin();
+      allow create: if own(uid)
+        && request.resource.data.status == 'pending'
+        && request.resource.data.role == 'user';
+      allow update: if isAdmin()
+        || (own(uid) && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['deviceCount', 'lastSeen', 'updatedAt']));
+      allow delete: if isAdmin();
+    }
+
+    match /users/{uid}/devices/{deviceId} {
+      allow read, write: if own(uid) || isAdmin();
+    }
+
+    match /users/{uid}/vaults/{vaultId} {
+      allow read, write: if own(uid);
+    }
+
+    match /users/{uid}/cloud/{documentId} {
+      allow read, write: if own(uid);
+    }
+
+    match /users/{uid}/archives/{archiveId}/{document=**} {
+      allow read, write: if own(uid);
+    }
+  }
+}

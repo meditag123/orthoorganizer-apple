@@ -11,7 +11,10 @@ final class KeychainSessionStore {
             "uid": session.uid,
             "vaultID": session.vaultID,
             "refreshToken": session.refreshToken,
-            "archiveKey": session.archiveKey.base64EncodedString()
+            "archiveKey": session.archiveKey.base64EncodedString(),
+            "role": session.role,
+            "sessionVersion": session.sessionVersion,
+            "deviceID": session.deviceID
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: payload) else { return }
         delete()
@@ -46,11 +49,17 @@ final class KeychainSessionStore {
               let key = Data(base64Encoded: encodedKey) else {
             return nil
         }
-        return OrganizerRemoteSession(username: username,
-                                      uid: uid,
-                                      vaultID: vaultID,
-                                      refreshToken: refreshToken,
-                                      archiveKey: key)
+        let session = OrganizerRemoteSession(username: username,
+                                             uid: uid,
+                                             vaultID: vaultID,
+                                             refreshToken: refreshToken,
+                                             archiveKey: key)
+        session.role = payload["role"] as? String ?? "user"
+        session.sessionVersion = max(1, payload["sessionVersion"] as? Int ?? 1)
+        if let deviceID = payload["deviceID"] as? String, !deviceID.isEmpty {
+            session.deviceID = deviceID
+        }
+        return session
     }
 
     func delete() {

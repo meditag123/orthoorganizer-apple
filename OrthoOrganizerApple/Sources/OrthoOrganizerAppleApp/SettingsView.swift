@@ -4,6 +4,7 @@ struct SettingsView: View {
     @EnvironmentObject private var store: OrganizerStore
     @State private var updateChecks = true
     @State private var showPasswordChange = false
+    @State private var showAdmin = false
 
     var body: some View {
         ScrollView {
@@ -20,6 +21,17 @@ struct SettingsView: View {
                     Divider()
                     Button("Αποσύνδεση λογαριασμού", role: .destructive) { store.signOut() }
                         .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                if store.isAdmin {
+                    SettingsGroup(title: "Διαχειριστής", icon: "person.badge.key") {
+                        Button {
+                            showAdmin = true
+                        } label: {
+                            Label("Διαχείριση χρηστών", systemImage: "person.2")
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
 
                 SettingsGroup(title: "Εμφάνιση", icon: "paintpalette") {
@@ -89,10 +101,13 @@ struct SettingsView: View {
         .sheet(isPresented: $showPasswordChange) {
             PasswordChangeView().environmentObject(store)
         }
+        .sheet(isPresented: $showAdmin) {
+            AdminView().environmentObject(store)
+        }
     }
 }
 
-private struct SettingsGroup<Content: View>: View {
+struct SettingsGroup<Content: View>: View {
     let title: String
     let icon: String
     let content: Content

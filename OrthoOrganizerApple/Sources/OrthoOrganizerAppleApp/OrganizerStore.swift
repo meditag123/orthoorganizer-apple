@@ -15,6 +15,9 @@ final class OrganizerStore: ObservableObject {
     @Published var errorMessage: String?
     @Published var statusMessage: String?
     @Published var isLocked = false
+    @Published var isAdmin = false
+    @Published var adminDashboard = AdminDashboard()
+    @Published var adminBusy = false
     private var backgroundedAt: Date?
 
     init(cloud: any OrganizerCloudService = FirebaseCloudService()) {
@@ -53,6 +56,7 @@ final class OrganizerStore: ObservableObject {
             keychain.save(session)
             self.username = session.username
             self.snapshot = loadedSnapshot
+            self.isAdmin = session.role == "admin"
             refreshWidget()
             isAuthenticated = true
             isLocked = false
@@ -71,10 +75,23 @@ final class OrganizerStore: ObservableObject {
         defer { isBusy = false }
         do {
             let session = try await cloud.register(username: username, email: email, password: password)
+            if session.requiresApproval {
+                remoteSession = nil
+                keychain.delete()
+                self.username = ""
+                isAuthenticated = false
+                isAdmin = false
+                snapshot = OrganizerSnapshot()
+                refreshWidget()
+                errorMessage = nil
+                statusMessage = "Ο λογαριασμός δημιουργήθηκε και περιμένει έγκριση διαχειριστή."
+                return
+            }
             remoteSession = session
             keychain.save(session)
             self.username = session.username
             snapshot = OrganizerSnapshot()
+            isAdmin = session.role == "admin"
             refreshWidget()
             isAuthenticated = true
             errorMessage = nil
@@ -114,6 +131,8 @@ final class OrganizerStore: ObservableObject {
         keychain.delete()
         username = ""
         isAuthenticated = false
+        isAdmin = false
+        adminDashboard = AdminDashboard()
         selectedSection = .overview
         snapshot = OrganizerSnapshot()
         errorMessage = nil
@@ -234,6 +253,7 @@ final class OrganizerStore: ObservableObject {
             remoteSession = session
             username = session.username
             snapshot = loadedSnapshot
+            isAdmin = session.role == "admin"
             refreshWidget()
             isAuthenticated = true
             errorMessage = nil
@@ -259,5 +279,67 @@ final class OrganizerStore: ObservableObject {
         snapshot.settings.biometricsEnabled = false
         UserDefaults.standard.set(false, forKey: "orthoorganizer.biometrics.enabled")
         persistChanges()
+    }
+
+    func loadAdminDashboard() async {
+        guard isAdmin, let session = remoteSession else { return }
+        adminBusy = true
+        defer { adminBusy = false }
+        do {
+            adminDashboard = try await cloud.loadAdminDashboard(using: session)
+            errorMessage = nil
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? "Δεν φορτώθηκε η διαχείριση χρηστών."
+        }
+    }
+
+    func saveAdminPolicy(_ policy: OrganizerAppPolicy) async {
+        guard isAdmin, let session = remoteSession else { return }
+        adminBusy = true
+        defer { adminBusy = false }
+        do {
+            try await cloud.updateAdminPolicy(policy, using: session)
+            adminDashboard.policy = policy
+            adminDashboard.policy.activeUserCount = adminDashboard.users.filter(\.isActive).count
+            statusMessage = "Οι ρυθμίσεις πρόσβασης αποθηκεύτηκαν."
+            errorMessage = nil
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? "Δεν αποθηκεύτηκαν οι ρυθμίσεις πρόσβασης."
+        }
+    }
+
+    func setManagedUserStatus(_ user: ManagedUser, status: String) async {
+        guard isAdmin, let session = remoteSession else { return }
+        var updated = user
+        updated.status = status
+        adminBusy = true
+        defer { adminBusy = false }
+        do {
+            try await cloud.updateManagedUser(updated, using: session)
+            if let index = adminDashboard.users.firstIndex(where: { $0.uid == user.uid }) {
+                adminDashboard.users[index] = updated
+            }
+            adminDashboard.policy.activeUserCount = adminDashboard.users.filter(\.isActive).count
+            statusMessage = status == "active" ? "Ο λογαριασμός εγκρίθηκε." : "Ο λογαριασμός ανεστάλη."
+            errorMessage = nil
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? "Δεν ενημερώθηκε ο λογαριασμός."
+        }
+    }
+
+    func revokeSessions(for user: ManagedUser) async {
+        guard isAdmin, let session = remoteSession else { return }
+        adminBusy = true
+        defer { adminBusy = false }
+        do {
+            try await cloud.revokeManagedUserSessions(user, using: session)
+            if let index = adminDashboard.users.firstIndex(where: { $0.uid == user.uid }) {
+                adminDashboard.users[index].sessionVersion += 1
+            }
+            statusMessage = "Οι ενεργές συνδέσεις ανακλήθηκαν."
+            errorMessage = nil
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? "Δεν ανακλήθηκαν οι συνδέσεις."
+        }
     }
 }

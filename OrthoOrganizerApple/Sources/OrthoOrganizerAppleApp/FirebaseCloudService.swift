@@ -7,6 +7,7 @@ final class FirebaseCloudService: OrganizerCloudService {
     private let projectID = "orthoorganizer-ec5b5"
     private let apiKey = "AIzaSyCq8-7UwQLcZsCuAEOtxBpILdK7fN2jkcc"
     private let chunkSize = 450_000
+    private let defaultPolicy = OrganizerAppPolicy()
 
     func signIn(username: String, password: String) async throws -> OrganizerRemoteSession {
         let cleanUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -45,12 +46,15 @@ final class FirebaseCloudService: OrganizerCloudService {
             throw OrganizerCloudError.archiveUnavailable
         }
 
-        return OrganizerRemoteSession(username: cleanUsername,
-                                      uid: actualUID,
-                                      vaultID: vaultID,
-                                      refreshToken: refreshToken,
-                                      archiveKey: archiveKey,
-                                      accessToken: idToken)
+        let session = OrganizerRemoteSession(username: cleanUsername,
+                                             uid: actualUID,
+                                             vaultID: vaultID,
+                                             refreshToken: refreshToken,
+                                             archiveKey: archiveKey,
+                                             accessToken: idToken)
+        try await validateAccess(session, token: idToken, allowLegacyProvisioning: true)
+        try await ensureDevice(for: session, token: idToken)
+        return session
     }
 
     func register(username: String, email: String, password: String) async throws -> OrganizerRemoteSession {
@@ -58,8 +62,14 @@ final class FirebaseCloudService: OrganizerCloudService {
         guard cleanUsername.count >= 3, password.count >= 6, email.contains("@") else {
             throw OrganizerCloudError.invalidCredentials
         }
+        let cleanEmail = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let policy = await loadPolicyOrDefault()
+        guard policy.registrationOpen else { throw OrganizerCloudError.registrationClosed }
+        guard policy.activeUserCount < policy.maximumActiveUsers else {
+            throw OrganizerCloudError.userLimitReached
+        }
         let auth = try await request("POST", authURL("signUp"), body: [
-            "email": email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            "email": cleanEmail,
             "password": password,
             "returnSecureToken": true
         ])
@@ -67,7 +77,7 @@ final class FirebaseCloudService: OrganizerCloudService {
         let refreshToken = string(auth, "refreshToken")
         let uid = string(auth, "localId")
         let empty = try OrganizerArchiveCodec.createEmptyArchive(username: cleanUsername,
-                                                                  email: email,
+                                                                  email: cleanEmail,
                                                                   password: password)
         let vaultID = sha256Hex(empty.key)
         let vaultFields: [String: Any] = [
@@ -82,7 +92,7 @@ final class FirebaseCloudService: OrganizerCloudService {
                               token: idToken)
         let indexFields: [String: Any] = [
             "username": ["stringValue": cleanUsername],
-            "email": ["stringValue": email.lowercased()],
+            "email": ["stringValue": cleanEmail],
             "uid": ["stringValue": uid],
             "vaultId": ["stringValue": vaultID],
             "updatedAt": ["timestampValue": ISO8601DateFormatter().string(from: .now)]
@@ -95,16 +105,35 @@ final class FirebaseCloudService: OrganizerCloudService {
             "requestType": "VERIFY_EMAIL",
             "idToken": idToken
         ])
+        let status = policy.approvalRequired ? "pending" : "active"
+        let accessFields = accessProfileFields(username: cleanUsername,
+                                               email: cleanEmail,
+                                               status: status,
+                                               role: "user",
+                                               sessionVersion: 1)
+        _ = try await request("PATCH",
+                              firestoreURL("users/\(uid)/access/profile"),
+                              body: ["fields": accessFields],
+                              token: idToken)
+        _ = try await request("PATCH",
+                              firestoreURL("adminControl/managedUsers/\(uid)"),
+                              body: ["fields": accessFields],
+                              token: idToken)
         let session = OrganizerRemoteSession(username: cleanUsername,
                                              uid: uid,
                                              vaultID: vaultID,
                                              refreshToken: refreshToken,
                                              archiveKey: empty.key,
                                              accessToken: idToken)
+        session.requiresApproval = policy.approvalRequired
         session.archiveObject = empty.object
         session.archiveEntries = empty.entries
         session.archiveHeader = empty.header
-        try await upload(snapshot: OrganizerSnapshot(), using: session)
+        // Pending registrations are deliberately not given a usable archive
+        // session and are not uploaded until an administrator approves them.
+        if !policy.approvalRequired {
+            try await upload(snapshot: OrganizerSnapshot(), using: session)
+        }
         return session
     }
 
@@ -236,6 +265,73 @@ final class FirebaseCloudService: OrganizerCloudService {
         return try OrganizerArchiveCodec.decryptBlob(encrypted, key: session.archiveKey)
     }
 
+    func loadAdminDashboard(using session: OrganizerRemoteSession) async throws -> AdminDashboard {
+        guard session.role == "admin" else { throw OrganizerCloudError.notAuthorized }
+        let token = try await accessToken(for: session)
+        let policy = try await loadPolicy(token: token)
+        let users = try await loadManagedUsers(token: token)
+        return AdminDashboard(policy: policy, users: users.sorted { $0.username.localizedCaseInsensitiveCompare($1.username) == .orderedAscending })
+    }
+
+    func updateAdminPolicy(_ policy: OrganizerAppPolicy, using session: OrganizerRemoteSession) async throws {
+        guard session.role == "admin" else { throw OrganizerCloudError.notAuthorized }
+        let token = try await accessToken(for: session)
+        let users = try await loadManagedUsers(token: token)
+        let activeCount = users.filter(\.isActive).count
+        let safeMaximum = max(1, policy.maximumActiveUsers)
+        let safeDevices = max(1, policy.maximumDevicesPerUser)
+        let fields: [String: Any] = [
+            "registrationOpen": ["booleanValue": policy.registrationOpen],
+            "approvalRequired": ["booleanValue": true],
+            "maximumActiveUsers": ["integerValue": "\(safeMaximum)"],
+            "maximumDevicesPerUser": ["integerValue": "\(safeDevices)"],
+            "minimumAppVersion": ["stringValue": policy.minimumAppVersion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? currentAppVersion : policy.minimumAppVersion.trimmingCharacters(in: .whitespacesAndNewlines)],
+            "activeUserCount": ["integerValue": "\(activeCount)"],
+            "updatedAt": ["timestampValue": ISO8601DateFormatter().string(from: .now)]
+        ]
+        _ = try await request("PATCH", firestoreURL("adminControl/policy"), body: ["fields": fields], token: token)
+    }
+
+    func updateManagedUser(_ user: ManagedUser, using session: OrganizerRemoteSession) async throws {
+        guard session.role == "admin" else { throw OrganizerCloudError.notAuthorized }
+        let token = try await accessToken(for: session)
+        let existing = try await loadManagedUsers(token: token)
+        guard let current = existing.first(where: { $0.uid == user.uid }) else { throw OrganizerCloudError.archiveUnavailable }
+        let nextStatus = ["pending", "active", "suspended"].contains(user.status) ? user.status : current.status
+        let nextRole = user.uid == session.uid ? "admin" : (user.role == "admin" ? "admin" : "user")
+        let fields: [String: Any] = [
+            "username": ["stringValue": current.username],
+            "email": ["stringValue": current.email],
+            "status": ["stringValue": nextStatus],
+            "role": ["stringValue": nextRole],
+            "deviceCount": ["integerValue": "\(current.deviceCount)"],
+            "lastSeen": ["stringValue": current.lastSeen],
+            "sessionVersion": ["integerValue": "\(current.sessionVersion)"],
+            "updatedAt": ["timestampValue": ISO8601DateFormatter().string(from: .now)]
+        ]
+        _ = try await request("PATCH", firestoreURL("users/\(user.uid)/access/profile"), body: ["fields": fields], token: token)
+        _ = try await request("PATCH", firestoreURL("adminControl/managedUsers/\(user.uid)"), body: ["fields": fields], token: token)
+        try await refreshActiveUserCount(token: token, users: existing.map { $0.uid == user.uid ? ManagedUser(uid: $0.uid, username: $0.username, email: $0.email, status: nextStatus, role: nextRole, deviceCount: $0.deviceCount, lastSeen: $0.lastSeen, sessionVersion: $0.sessionVersion) : $0 })
+    }
+
+    func revokeManagedUserSessions(_ user: ManagedUser, using session: OrganizerRemoteSession) async throws {
+        guard session.role == "admin" else { throw OrganizerCloudError.notAuthorized }
+        let token = try await accessToken(for: session)
+        let nextVersion = max(1, user.sessionVersion + 1)
+        var fields: [String: Any] = [
+            "username": ["stringValue": user.username],
+            "email": ["stringValue": user.email],
+            "status": ["stringValue": user.status],
+            "role": ["stringValue": user.role],
+            "deviceCount": ["integerValue": "\(user.deviceCount)"],
+            "lastSeen": ["stringValue": user.lastSeen],
+            "sessionVersion": ["integerValue": "\(nextVersion)"],
+            "updatedAt": ["timestampValue": ISO8601DateFormatter().string(from: .now)]
+        ]
+        _ = try await request("PATCH", firestoreURL("users/\(user.uid)/access/profile"), body: ["fields": fields], token: token)
+        _ = try await request("PATCH", firestoreURL("adminControl/managedUsers/\(user.uid)"), body: ["fields": fields], token: token)
+    }
+
     private func accessToken(for session: OrganizerRemoteSession) async throws -> String {
         let result = try await request("POST", "https://securetoken.googleapis.com/v1/token?key=\(apiKey)", body: [
             "grant_type": "refresh_token",
@@ -243,7 +339,119 @@ final class FirebaseCloudService: OrganizerCloudService {
         ])
         let token = string(result, "id_token")
         session.accessToken = token
+        try await validateAccess(session, token: token, allowLegacyProvisioning: false)
         return token
+    }
+
+    private var currentAppVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.6.6"
+    }
+
+    private func loadPolicyOrDefault() async -> OrganizerAppPolicy {
+        (try? await loadPolicy(token: nil)) ?? defaultPolicy
+    }
+
+    private func loadPolicy(token: String?) async throws -> OrganizerAppPolicy {
+        do {
+            let document = try await request("GET", firestoreURL("adminControl/policy"), token: token)
+            let values = fields(document)
+            return OrganizerAppPolicy(registrationOpen: boolField(values, "registrationOpen", default: true),
+                                      approvalRequired: true,
+                                      maximumActiveUsers: max(1, intField(values, "maximumActiveUsers") == 0 ? 10 : intField(values, "maximumActiveUsers")),
+                                      maximumDevicesPerUser: max(1, intField(values, "maximumDevicesPerUser") == 0 ? 2 : intField(values, "maximumDevicesPerUser")),
+                                      minimumAppVersion: stringField(values, "minimumAppVersion") ?? "0.6.6",
+                                      activeUserCount: intField(values, "activeUserCount"))
+        } catch let error as OrganizerCloudError where error == .archiveUnavailable {
+            return defaultPolicy
+        }
+    }
+
+    private func validateAccess(_ session: OrganizerRemoteSession, token: String, allowLegacyProvisioning: Bool) async throws {
+        let policy = try await loadPolicy(token: token)
+        guard isVersion(currentAppVersion, atLeast: policy.minimumAppVersion) else {
+            throw OrganizerCloudError.minimumVersionRequired
+        }
+        if let access = try await loadAccessProfile(uid: session.uid, token: token) {
+            let status = stringField(access, "status") ?? "pending"
+            if status == "pending" { throw OrganizerCloudError.accountPending }
+            if status == "suspended" { throw OrganizerCloudError.accountSuspended }
+            let previousVersion = session.sessionVersion
+            let currentVersion = max(1, intField(access, "sessionVersion"))
+            if !allowLegacyProvisioning && previousVersion > 0 && currentVersion != previousVersion {
+                throw OrganizerCloudError.accountSuspended
+            }
+            session.role = stringField(access, "role") ?? "user"
+            session.sessionVersion = currentVersion
+            session.requiresApproval = false
+            return
+        }
+        // Existing accounts without an access profile are also held until an
+        // administrator explicitly adds/approves their profile.
+        throw OrganizerCloudError.accountPending
+    }
+
+    private func ensureDevice(for session: OrganizerRemoteSession, token: String) async throws {
+        let policy = try await loadPolicy(token: token)
+        let devicePath = "users/\(session.uid)/devices/\(session.deviceID)"
+        let devices = try await request("GET", firestoreURL("users/\(session.uid)/devices?pageSize=100"), token: token)
+        let existingDeviceCount = (devices["documents"] as? [[String: Any]] ?? []).count
+        do {
+            _ = try await request("GET", firestoreURL(devicePath), token: token)
+        } catch let error as OrganizerCloudError where error == .archiveUnavailable {
+            if existingDeviceCount >= policy.maximumDevicesPerUser { throw OrganizerCloudError.deviceLimitReached }
+        }
+        let deviceCount = existingDeviceCount == 0 ? 1 : existingDeviceCount
+        let fields: [String: Any] = [
+            "deviceId": ["stringValue": session.deviceID],
+            "platform": ["stringValue": "apple"],
+            "lastSeen": ["timestampValue": ISO8601DateFormatter().string(from: .now)]
+        ]
+        _ = try await request("PATCH", firestoreURL(devicePath), body: ["fields": fields], token: token)
+        var accessFields = fields(try await request("GET", firestoreURL("users/\(session.uid)/access/profile"), token: token))
+        accessFields["deviceCount"] = ["integerValue": "\(deviceCount)"]
+        accessFields["lastSeen"] = ["timestampValue": ISO8601DateFormatter().string(from: .now)]
+        accessFields["updatedAt"] = ["timestampValue": ISO8601DateFormatter().string(from: .now)]
+        _ = try await request("PATCH", firestoreURL("users/\(session.uid)/access/profile"), body: ["fields": accessFields], token: token)
+    }
+
+    private func loadAccessProfile(uid: String, token: String) async throws -> [String: Any]? {
+        do {
+            return fields(try await request("GET", firestoreURL("users/\(uid)/access/profile"), token: token))
+        } catch let error as OrganizerCloudError where error == .archiveUnavailable {
+            return nil
+        }
+    }
+
+    private func loadManagedUsers(token: String) async throws -> [ManagedUser] {
+        let response = try await request("GET", firestoreURL("adminControl/managedUsers?pageSize=200"), token: token)
+        let documents = response["documents"] as? [[String: Any]] ?? []
+        return documents.compactMap { document in
+            let values = fields(document)
+            guard let name = document["name"] as? String,
+                  let uid = name.split(separator: "/").last.map(String.init) else { return nil }
+            return ManagedUser(uid: uid,
+                               username: stringField(values, "username") ?? uid,
+                               email: stringField(values, "email") ?? "",
+                               status: stringField(values, "status") ?? "pending",
+                               role: stringField(values, "role") ?? "user",
+                               deviceCount: intField(values, "deviceCount"),
+                               lastSeen: stringField(values, "lastSeen") ?? stringField(values, "updatedAt") ?? "",
+                               sessionVersion: max(1, intField(values, "sessionVersion")))
+        }
+    }
+
+    private func refreshActiveUserCount(token: String, users: [ManagedUser]) async throws {
+        let policy = try await loadPolicy(token: token)
+        let fields: [String: Any] = [
+            "registrationOpen": ["booleanValue": policy.registrationOpen],
+            "approvalRequired": ["booleanValue": true],
+            "maximumActiveUsers": ["integerValue": "\(policy.maximumActiveUsers)"],
+            "maximumDevicesPerUser": ["integerValue": "\(policy.maximumDevicesPerUser)"],
+            "minimumAppVersion": ["stringValue": policy.minimumAppVersion],
+            "activeUserCount": ["integerValue": "\(users.filter(\.isActive).count)"],
+            "updatedAt": ["timestampValue": ISO8601DateFormatter().string(from: .now)]
+        ]
+        _ = try await request("PATCH", firestoreURL("adminControl/policy"), body: ["fields": fields], token: token)
     }
 
     private func request(_ method: String,
@@ -302,7 +510,47 @@ final class FirebaseCloudService: OrganizerCloudService {
 
     private func stringField(_ fields: [String: Any], _ key: String) -> String? {
         let field = fields[key] as? [String: Any]
-        return field?["stringValue"] as? String ?? field?["bytesValue"] as? String
+        return field?["stringValue"] as? String
+            ?? field?["bytesValue"] as? String
+            ?? field?["timestampValue"] as? String
+    }
+
+    private func boolField(_ fields: [String: Any], _ key: String, default defaultValue: Bool) -> Bool {
+        let field = fields[key] as? [String: Any]
+        return field?["booleanValue"] as? Bool ?? defaultValue
+    }
+
+    private func accessProfileFields(username: String,
+                                     email: String,
+                                     status: String,
+                                     role: String,
+                                     sessionVersion: Int) -> [String: Any] {
+        let now = ISO8601DateFormatter().string(from: .now)
+        return [
+            "username": ["stringValue": username],
+            "email": ["stringValue": email],
+            "status": ["stringValue": status],
+            "role": ["stringValue": role],
+            "deviceCount": ["integerValue": "0"],
+            "lastSeen": ["timestampValue": now],
+            "sessionVersion": ["integerValue": "\(max(1, sessionVersion))"],
+            "createdAt": ["timestampValue": now],
+            "updatedAt": ["timestampValue": now]
+        ]
+    }
+
+    private func isVersion(_ version: String, atLeast minimum: String) -> Bool {
+        func parts(_ value: String) -> [Int] {
+            value.split(separator: ".").map { Int($0) ?? 0 }
+        }
+        let left = parts(version)
+        let right = parts(minimum)
+        for index in 0..<max(left.count, right.count) {
+            let a = index < left.count ? left[index] : 0
+            let b = index < right.count ? right[index] : 0
+            if a != b { return a > b }
+        }
+        return true
     }
 
     private func intField(_ fields: [String: Any], _ key: String) -> Int {
